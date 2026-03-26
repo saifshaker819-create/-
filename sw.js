@@ -1,7 +1,7 @@
-const CACHE_NAME = 'dental-absences-v1';
+const CACHE_NAME = 'dental-absences-v2';
 const ASSETS = [
-  './index.html',
   './manifest.json'
+  // index.html لا يُخزَّن في الكاش حتى يُحمَّل دائماً أحدث نسخة
 ];
 
 self.addEventListener('install', (e) => {
@@ -12,6 +12,7 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
+  // امسح كل الكاشات القديمة
   e.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
@@ -21,6 +22,15 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
+
+  // index.html → دائماً من السيرفر، لا كاش أبداً
+  if (url.pathname.endsWith('/') || url.pathname.endsWith('index.html')) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
+
+  // باقي الملفات → حاول السيرفر أولاً، وعند انقطاع النت استخدم الكاش
   e.respondWith(
     fetch(e.request).catch(() => caches.match(e.request))
   );
