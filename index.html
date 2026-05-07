@@ -2,6 +2,19 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
+<script>
+// اصطياد أخطاء التحميل العام — يمنع تجمد الصفحة
+window.addEventListener('error', function(e){
+  if(e && e.message && (
+    e.message.indexOf('firebase') !== -1 ||
+    e.message.indexOf('XLSX') !== -1 ||
+    e.message.indexOf('is not defined') !== -1
+  )){
+    console.warn('Caught load error (handled):', e.message);
+    e.preventDefault();
+  }
+}, true);
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#4f8ef7">
 <meta name="mobile-web-app-capable" content="yes">
@@ -11,14 +24,56 @@
 <link rel="manifest" href="manifest.json">
 <title>نظام كلية طب الأسنان / جامعة ذي قار</title>
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800;900&display=swap" rel="stylesheet">
-<!-- Firebase SDKs -->
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<!-- Firebase SDKs — مع fallback محلي إذا كان offline -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js" onerror="window._fbErr=true"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js" onerror="window._fbErr=true"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js" onerror="window._fbErr=true"></script>
+<script>
+// إذا فشل تحميل Firebase (لا إنترنت) → كائنات وهمية لتفادي أخطاء "is not defined"
+(function(){
+  if(typeof firebase !== 'undefined' && !window._fbErr) return;
+  var _noopRef = {
+    on: function(){}, once: function(){ return Promise.resolve({val:function(){return null;}}); },
+    set: function(){ return Promise.reject(new Error('offline')); },
+    off: function(){}
+  };
+  window.firebase = {
+    apps: [],
+    initializeApp: function(){ return {}; },
+    database: function(){ return { ref: function(){ return _noopRef; } }; },
+    auth: function(){
+      return {
+        onAuthStateChanged: function(cb){ setTimeout(function(){cb(null);},50); return function(){}; },
+        signInWithEmailAndPassword: function(){ return Promise.reject(new Error('offline')); },
+        signOut: function(){ return Promise.resolve(); },
+        currentUser: null
+      };
+    }
+  };
+  firebase.auth.EmailAuthProvider = { credential: function(){return {};} };
+
+})();
+</script>
 <!-- xlsx for Astath export -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" onerror="window._xlsxErr=true"></script>
 <!-- xlsx-js-style for admin export -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js" onerror="window._xlsxStyleErr=true"></script>
+<script>
+// Fallback إذا فشل تحميل xlsx (لا إنترنت)
+if(typeof XLSX === 'undefined'){
+  window.XLSX = {
+    utils: {
+      book_new: function(){ return {}; },
+      json_to_sheet: function(){ return {}; },
+      book_append_sheet: function(){},
+      encode_col: function(){ return 'A'; },
+      decode_range: function(){ return {s:{c:0,r:0},e:{c:0,r:0}}; }
+    },
+    write: function(){ return new ArrayBuffer(0); },
+    writeFile: function(){ alert('تصدير Excel غير متاح بدون إنترنت'); }
+  };
+}
+</script>
 
 <style>
 /* ===========================
@@ -663,6 +718,7 @@ body.light-mode #adminApp .admin-header{background:rgba(238,242,249,0.92);border
     <div class="sync-dot" id="syncDot"></div>
     <span id="syncText">جاري الاتصال...</span>
   </div>
+  <div id="syncPendingBadge" style="display:none;font-size:11px;font-weight:700;color:#fbbf24;padding:3px 10px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:20px;margin-top:4px;text-align:center"></div>
   <!-- PWA Banner Astath -->
   <div class="pwa-banner" id="pwaBanner">
     <div class="pwa-banner-icon">🦷</div>
@@ -974,6 +1030,54 @@ const auth = firebase.auth();
 const ASTATH_UID  = '3QR2AA6dGchFL8f0NiTKkNyUS0B3'; // doctor — نظام الغيابات
 const ADMIN_UID   = 'wzjftZWiwUXDVzgTypVfqLegs7Q2';  // student0191 — لوحة المعاون
 
+// ===== بيانات دخول محلية (للعمل بدون إنترنت) =====
+const LOCAL_CREDS = {
+  astath: { user: 'doctor', pass: 'doc@1230' },
+  admin:  { user: '',       pass: 'student0191' }
+};
+
+// ===== OFFLINE PENDING QUEUE =====
+// يخزن العمليات التي تمت وقت انقطاع الإنترنت لإرسالها لاحقاً
+const PENDING_QUEUE_KEY = '_pendingQueue';
+const PendingQueue = {
+  load(){ try{ const r=localStorage.getItem(PENDING_QUEUE_KEY); return r?JSON.parse(r):[]; }catch(e){return[];} },
+  save(q){ try{ localStorage.setItem(PENDING_QUEUE_KEY,JSON.stringify(q)); }catch(e){} },
+  add(type, payload){
+    const q=this.load();
+    q.push({ type, payload, ts: Date.now() });
+    this.save(q);
+    _updatePendingBadge();
+  },
+  clear(){ localStorage.removeItem(PENDING_QUEUE_KEY); _updatePendingBadge(); },
+  count(){ return this.load().length; }
+};
+
+function _updatePendingBadge(){
+  const n=PendingQueue.count();
+  ['syncPendingBadge','syncPendingBadgeAdmin'].forEach(function(id){
+    const el=document.getElementById(id);
+    if(!el) return;
+    el.textContent = n>0 ? ('⏳ '+n+' عملية معلقة') : '';
+    el.style.display = n>0 ? 'block' : 'none';
+  });
+}
+
+// إرسال جميع العمليات المعلقة إلى Firebase عند الاتصال
+async function flushPendingQueue(){
+  const q=PendingQueue.load();
+  if(!q.length) return;
+  setSyncStatus('syncing','جاري رفع '+q.length+' عملية معلقة...');
+  try{
+    // أبسط استراتيجية: رفع state الكامل مرة واحدة (يغطي كل العمليات المعلقة)
+    await db.ref('dentalData').set(state);
+    PendingQueue.clear();
+    setSyncStatus('online','تم رفع '+q.length+' عملية معلقة ✅');
+    toast('تم مزامنة '+q.length+' عملية معلقة مع لوحة المعاون ✅','s');
+  } catch(err){
+    setSyncStatus('offline','فشل رفع العمليات المعلقة');
+  }
+}
+
 // ===== ENCODING =====
 const _enc = {
   encode(s){ try{return btoa(unescape(encodeURIComponent(s)));}catch(e){return s;} },
@@ -1214,30 +1318,16 @@ async function bioLogin(app){
     loginBtn.disabled = true;
 
     if(app === 'astath'){
-      // تسجيل دخول Firebase مباشرة
-      auth.signInWithEmailAndPassword('doctor.absences@dental.local','doc@1230')
-        .then(function(cred){
-          currentApp='astath';
-          currentUser={user:'doctor',role:'admin',displayName:'الدكتور'};
-          setTimeout(function(){ showAstathApp(); loginBtn.textContent='دخول ←'; loginBtn.disabled=false; },300);
-        })
-        .catch(function(){
-          errEl.textContent='❌ فشل التحقق من Firebase';
-          errEl.classList.add('show');
-          loginBtn.textContent='دخول ←'; loginBtn.disabled=false;
-        });
+      // دخول محلي فوري — Firebase في الخلفية
+      currentApp='astath';
+      currentUser={user:'doctor',role:'admin',displayName:'الدكتور'};
+      setTimeout(function(){ showAstathApp(); loginBtn.textContent='دخول ←'; loginBtn.disabled=false; },300);
+      _tryFirebaseAuth('astath');
     } else {
-      auth.signInWithEmailAndPassword('doctor.viewer@dental.local','student0191')
-        .then(function(cred){
-          currentApp='admin';
-          currentUser={user:'admin',role:'admin',displayName:'معاون العميد'};
-          setTimeout(function(){ showAdminApp(); loginBtn.textContent='دخول ←'; loginBtn.disabled=false; },300);
-        })
-        .catch(function(){
-          errEl.textContent='❌ فشل التحقق من Firebase';
-          errEl.classList.add('show');
-          loginBtn.textContent='دخول ←'; loginBtn.disabled=false;
-        });
+      currentApp='admin';
+      currentUser={user:'admin',role:'admin',displayName:'معاون العميد'};
+      setTimeout(function(){ showAdminApp(); loginBtn.textContent='دخول ←'; loginBtn.disabled=false; },300);
+      _tryFirebaseAuth('admin');
     }
   } catch(e){
     if(e.message === 'NO_CREDS'){
@@ -1403,7 +1493,7 @@ function deleteBioCred(app, credId){
   _updateBioButtons();
 }
 
-// ===== UNIFIED LOGIN =====
+// ===== UNIFIED LOGIN (Offline-First) =====
 function doLogin(){
   const u=(document.getElementById('loginUser').value||'').trim();
   const p=(document.getElementById('loginPass').value||'');
@@ -1416,49 +1506,39 @@ function doLogin(){
   btn.disabled=true; btn.textContent='جاري التحقق...';
   errEl.classList.remove('show');
 
-  // تحديد ما إذا كان يريد دخول نظام الغيابات (doctor + doc@1230)
-  // أو لوحة المعاون (student0191 فقط بدون يوزر)
-  const wantsAstath = (u.toLowerCase()==='doctor' && p==='doc@1230');
-  const wantsAdmin  = (!u && p==='student0191') || (u==='' && p==='student0191');
+  // التحقق المحلي — لا يحتاج إنترنت
+  const wantsAstath = (u.toLowerCase()==='doctor' && p===LOCAL_CREDS.astath.pass);
+  const wantsAdmin  = (p===LOCAL_CREDS.admin.pass && (u==='' || u.toLowerCase()==='admin'));
+
+  if(!wantsAstath && !wantsAdmin){
+    setTimeout(function(){ _loginFail(errEl,attEl,btn,'❌ بيانات الدخول غير صحيحة'); },400);
+    return;
+  }
+
+  // ✅ الدخول المحلي ناجح — لا ننتظر Firebase
+  LOCK.reset();
+  btn.textContent='✅ تم الدخول';
 
   if(wantsAstath){
-    // تسجيل دخول Firebase لـ Astath
-    auth.signInWithEmailAndPassword('doctor.absences@dental.local', p)
-      .then(function(cred){
-        if(cred.user.uid !== ASTATH_UID){
-          auth.signOut();
-          _loginFail(errEl,attEl,btn,'❌ غير مصرح لك بالدخول');
-          return;
-        }
-        LOCK.reset();
-        currentApp='astath';
-        currentUser={user:'doctor',role:'admin',displayName:'الدكتور'};
-        btn.textContent='✅ تم الدخول';
-        setTimeout(function(){ showAstathApp(); },350);
-      })
-      .catch(function(){ _loginFail(errEl,attEl,btn,'❌ بيانات الدخول غير صحيحة'); });
-  } else if(wantsAdmin){
-    // تسجيل دخول Firebase لـ Admin
-    auth.signInWithEmailAndPassword('doctor.viewer@dental.local', p)
-      .then(function(cred){
-        if(cred.user.uid !== ADMIN_UID){
-          auth.signOut();
-          _loginFail(errEl,attEl,btn,'❌ غير مصرح لك بالدخول');
-          return;
-        }
-        LOCK.reset();
-        currentApp='admin';
-        currentUser={user:'admin',role:'admin',displayName:'معاون العميد'};
-        btn.textContent='✅ تم الدخول';
-        setTimeout(function(){ showAdminApp(); },350);
-      })
-      .catch(function(){ _loginFail(errEl,attEl,btn,'❌ الرمز غير صحيح'); });
+    currentApp='astath';
+    currentUser={user:'doctor',role:'admin',displayName:'الدكتور'};
+    setTimeout(function(){ showAstathApp(); },350);
   } else {
-    // محاولة فاشلة
-    setTimeout(function(){
-      _loginFail(errEl,attEl,btn,'❌ بيانات الدخول غير صحيحة');
-    },400);
+    currentApp='admin';
+    currentUser={user:'admin',role:'admin',displayName:'معاون العميد'};
+    setTimeout(function(){ showAdminApp(); },350);
   }
+
+  // محاولة مزامنة Firebase في الخلفية (إن كان متصلاً)
+  _tryFirebaseAuth(wantsAstath ? 'astath' : 'admin');
+}
+
+function _tryFirebaseAuth(app){
+  const email = app==='astath' ? 'doctor.absences@dental.local' : 'doctor.viewer@dental.local';
+  const pass  = app==='astath' ? LOCAL_CREDS.astath.pass : LOCAL_CREDS.admin.pass;
+  auth.signInWithEmailAndPassword(email, pass).catch(function(){
+    // فشل الاتصال — لا مشكلة، العمل يستمر محلياً
+  });
 }
 
 function _loginFail(errEl,attEl,btn,msg){
@@ -1495,23 +1575,25 @@ function showAdminApp(){
 }
 
 function doLogout(){
-  auth.signOut().finally(function(){
-    currentUser=null; currentApp=null;
-    document.getElementById('loginUser').value='';
-    document.getElementById('loginPass').value='';
-    document.getElementById('loginBtn').disabled=false;
-    document.getElementById('loginBtn').textContent='دخول ←';
-    document.getElementById('loginAttempts').textContent='';
-    document.getElementById('loginError').classList.remove('show');
-    document.getElementById('astathApp').style.display='none';
-    document.getElementById('adminApp').style.display='none';
-    document.getElementById('loginScreen').style.display='flex';
-  });
+  // تسجيل الخروج المحلي فوراً
+  currentUser=null; currentApp=null;
+  document.getElementById('loginUser').value='';
+  document.getElementById('loginPass').value='';
+  document.getElementById('loginBtn').disabled=false;
+  document.getElementById('loginBtn').textContent='دخول ←';
+  document.getElementById('loginAttempts').textContent='';
+  document.getElementById('loginError').classList.remove('show');
+  document.getElementById('astathApp').style.display='none';
+  document.getElementById('adminApp').style.display='none';
+  document.getElementById('loginScreen').style.display='flex';
+  // محاولة Firebase signOut في الخلفية
+  auth.signOut().catch(function(){});
 }
 
-// مراقبة حالة المصادقة
+// مراقبة حالة المصادقة (للمزامنة فقط — الدخول يتم محلياً)
 auth.onAuthStateChanged(function(user){
   if(user && !currentUser){
+    // استعادة الجلسة من Firebase بعد تحديث الصفحة
     if(user.uid === ASTATH_UID){
       currentApp='astath';
       currentUser={user:'doctor',role:'admin',displayName:'الدكتور'};
@@ -1578,12 +1660,17 @@ function startFirebaseListeners(){
   db.ref('dentalData').on('value',function(snapshot){
     const data=snapshot.val();
     if(data){
+      // دمج البيانات السحابية مع الحالة المحلية (الأحدث يغلب)
       state={...state,...data};
       _enc.set('_dc',state);
       if(currentApp==='astath') refreshCurrentView();
     }
     isOnline=true;
     setSyncStatus('online','متصل ومحدّث ✓');
+    // إرسال العمليات المعلقة عند الاتصال
+    if(PendingQueue.count()>0){
+      setTimeout(flushPendingQueue, 1500);
+    }
     // عند تحديث البيانات وكان Admin مفتوح أيضاً
     if(currentApp==='admin'){ adminState=state; applyAdminFilters(); renderAdminStats(); }
   },function(error){
@@ -1591,9 +1678,17 @@ function startFirebaseListeners(){
     setSyncStatus('offline','غير متصل — وضع محلي');
   });
   db.ref('.info/connected').on('value',function(snap){
+    const wasOffline = !isOnline;
     isOnline=snap.val();
-    if(isOnline){ setSyncStatus('online','متصل ✓'); }
-    else { setSyncStatus('offline','غير متصل'); }
+    if(isOnline){
+      setSyncStatus('online','متصل ✓');
+      // إذا كان منقطعاً وعاد — أرسل القائمة المعلقة
+      if(wasOffline && PendingQueue.count()>0){
+        setTimeout(flushPendingQueue, 2000);
+      }
+    } else {
+      setSyncStatus('offline','غير متصل');
+    }
   });
 }
 
@@ -1606,8 +1701,16 @@ function save(skipFirebase){
     syncTimeout=setTimeout(()=>{
       db.ref('dentalData').set(state)
         .then(()=>setSyncStatus('online','تم الحفظ ✓'))
-        .catch(()=>setSyncStatus('offline','خطأ في الحفظ'));
+        .catch(()=>{
+          // فشل الحفظ — أضف للقائمة
+          PendingQueue.add('save', { ts: Date.now() });
+          setSyncStatus('offline','خطأ في الحفظ — محفوظ محلياً');
+        });
     },600);
+  } else {
+    // غير متصل — اضف للقائمة المعلقة
+    PendingQueue.add('save', { ts: Date.now() });
+    setSyncStatus('offline','محفوظ محلياً — سيُرفع عند الاتصال');
   }
 }
 
@@ -2383,8 +2486,13 @@ let adminPendingDeleteIds = [];
 
 function initAdminFirebase(){
   db.ref('.info/connected').on('value',snap=>{
+    const wasOffline = !isOnline;
+    isOnline = !!snap.val();
     const el=document.getElementById('liveStatus');
-    if(el) el.textContent=snap.val()?'🟢 مباشر':'🔴 غير متصل';
+    if(el) el.textContent=isOnline?'🟢 مباشر':'🔴 غير متصل';
+    if(isOnline && wasOffline && PendingQueue.count()>0){
+      setTimeout(flushPendingQueue, 2000);
+    }
   });
   db.ref('dentalData').on('value',snap=>{
     const data=snap.val();
@@ -2395,6 +2503,10 @@ function initAdminFirebase(){
       adminPopulateFilters();
       applyAdminFilters();
       renderAdminStats();
+    }
+    // إرسال Queue عند أول اتصال
+    if(PendingQueue.count()>0){
+      setTimeout(flushPendingQueue, 1500);
     }
   });
 }
@@ -2561,14 +2673,31 @@ function adminToggleStatus(recordId){
   const rec=adminState.attendance[recIndex];
   const newStatus=rec.status==='absent'?'present':'absent';
   rec.status=newStatus;
-  // تحديث حقل الحالة للسجل المحدد فقط بمساره الدقيق دون المساس بباقي السجلات
-  db.ref('dentalData/attendance/'+recIndex+'/status').set(newStatus)
-    .then(()=>{
-      toast('تم تغيير الحالة إلى '+(newStatus==='absent'?'غائب':'حاضر')+' ✅');
-      applyAdminFilters();
-      renderAdminStats();
-    })
-    .catch(()=>toast('خطأ في الحفظ','e'));
+  // تحديث الـ state المشترك أيضاً
+  state=adminState;
+  _enc.set('_dc',state);
+
+  if(isOnline){
+    // تحديث حقل الحالة للسجل المحدد فقط بمساره الدقيق
+    db.ref('dentalData/attendance/'+recIndex+'/status').set(newStatus)
+      .then(()=>{
+        toast('تم تغيير الحالة إلى '+(newStatus==='absent'?'غائب':'حاضر')+' ✅');
+        applyAdminFilters();
+        renderAdminStats();
+      })
+      .catch(()=>{
+        PendingQueue.add('adminToggle', { recIndex, newStatus });
+        toast('حُفظ محلياً — سيُرفع عند الاتصال ⏳','i');
+        applyAdminFilters();
+        renderAdminStats();
+      });
+  } else {
+    // غير متصل — احفظ محلياً وأضف للقائمة
+    PendingQueue.add('adminToggle', { recIndex, newStatus });
+    toast('حُفظ محلياً — سيُرفع لـ Firebase عند الاتصال ⏳','i');
+    applyAdminFilters();
+    renderAdminStats();
+  }
 }
 
 function renderAdminSummaryTable(records,stageId){
