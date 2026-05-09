@@ -452,7 +452,20 @@ body.light-mode #adminApp .admin-header{background:rgba(238,242,249,0.92);border
 .badge-stage{background:rgba(99,102,241,.15);color:#818cf8}
 .student-summary{background:var(--glass2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:24px}
 .ss-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
-/* Delete modal */
+/* Clear Records Modal */
+.crm-overlay{display:none;position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:16px}
+.crm-overlay.show{display:flex;animation:fadeInModal .2s ease}
+.crm-box{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius);padding:28px;max-width:480px;width:100%;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:16px}
+.crm-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.crm-head h3{font-size:17px;font-weight:800}
+.crm-close{width:32px;height:32px;border-radius:8px;background:var(--glass3);border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:var(--transition);font-family:'Tajawal',sans-serif}
+.crm-close:hover{background:rgba(239,68,68,.15);color:var(--absent);border-color:rgba(239,68,68,.3)}
+.crm-panel{display:flex;flex-direction:column;gap:12px}
+.crm-warn{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text2);line-height:1.7}
+.crm-confirm-btn{padding:11px 20px;border-radius:10px;background:var(--absent);border:none;color:#fff;font-family:'Tajawal',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:var(--transition);width:100%}
+.crm-confirm-btn:hover{opacity:.88}
+.crm-confirm-btn.yellow{background:linear-gradient(135deg,#f59e0b,#d97706)}
+
 .del-modal{display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:16px}
 .del-modal.open{display:flex;animation:fadeInModal .2s ease}
 .del-box{background:var(--bg2);border:1px solid rgba(239,68,68,.3);border-radius:var(--radius);padding:28px;max-width:460px;width:100%;box-shadow:var(--shadow)}
@@ -1042,6 +1055,52 @@ body.light-mode #adminApp .admin-header{background:rgba(238,242,249,0.92);border
         </div>
         <div class="asd-item-icon">🚪</div>
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- Clear Records Modal (Astath) -->
+<div class="crm-overlay" id="clearRecordsOverlay">
+  <div class="crm-box">
+    <div class="crm-head">
+      <h3 id="crm-title">🗑️ مسح السجلات</h3>
+      <button class="crm-close" onclick="closeClearRecordsModal()">✕</button>
+    </div>
+
+    <!-- لوحة: مسح كل السجلات -->
+    <div class="crm-panel" id="crm-all-panel">
+      <div class="crm-warn">
+        ⚠️ <strong>تحذير:</strong> سيتم حذف <strong>جميع</strong> سجلات الغياب والحضور نهائياً. لا يمكن التراجع عن هذه العملية. الطلاب والمواد لن تُحذف.
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">🔑 أدخل كلمة المرور للتأكيد</label>
+        <input class="form-input" id="crm-pwd-all" type="password" placeholder="كلمة مرور الدكتور" onkeydown="if(event.key==='Enter')confirmClearAll()">
+      </div>
+      <button class="crm-confirm-btn" onclick="confirmClearAll()">🗑️ تأكيد مسح كل السجلات</button>
+    </div>
+
+    <!-- لوحة: مسح سجلات مادة معينة -->
+    <div class="crm-panel" id="crm-subject-panel" style="display:none">
+      <div class="crm-warn">
+        ⚠️ سيتم حذف سجلات الغياب الخاصة بالمادة المختارة من المرحلة المحددة فقط. البيانات الأخرى تبقى سليمة.
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">🎓 المرحلة</label>
+        <select class="form-select" id="crm-stage" onchange="crmOnStageChange()" style="padding:9px 12px">
+          <option value="">-- اختر المرحلة --</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">📖 المادة</label>
+        <select class="form-select" id="crm-subject" style="padding:9px 12px">
+          <option value="">-- اختر المادة أولاً --</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">🔑 كلمة المرور للتأكيد</label>
+        <input class="form-input" id="crm-pwd-subj" type="password" placeholder="كلمة مرور الدكتور" onkeydown="if(event.key==='Enter')confirmClearSubject()">
+      </div>
+      <button class="crm-confirm-btn yellow" onclick="confirmClearSubject()">📖 تأكيد مسح سجلات المادة</button>
     </div>
   </div>
 </div>
@@ -2430,7 +2489,21 @@ function renderSettings(){
     + (_bioSupport ? `<div style="margin-top:10px"><button class="bio-add-btn astath-add" onclick="registerBioInSettings()" style="width:100%">＋ تسجيل بصمة جديدة</button><div class="bio-status" id="settingsBioStatus"></div></div>` : '');
 
   // --- خيارات متقدمة ---
-  const advHTML=`<div class="settings-item"><div><div class="si-info">مسح سجل الغيابات</div><div class="si-meta">يمسح السجلات فقط ولا يحذف الطلاب أو المواد</div></div><button class="si-btn si-del" onclick="clearAllAttendance()">🗑️ مسح</button></div>`;
+  const advHTML=`
+    <div class="settings-item" style="flex-direction:column;align-items:flex-start;gap:12px">
+      <div style="width:100%">
+        <div class="si-info">🗑️ مسح سجلات الغياب</div>
+        <div class="si-meta">اختر نوع المسح — لا يحذف الطلاب أو المواد</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%">
+        <button class="btn-clear-records" onclick="openClearRecordsModal('all')" style="flex:1;min-width:140px;padding:10px 16px;border-radius:10px;background:rgba(239,68,68,.1);border:1.5px solid rgba(239,68,68,.35);color:var(--absent);font-family:'Tajawal',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:var(--transition);display:flex;align-items:center;justify-content:center;gap:6px" onmouseover="this.style.background='rgba(239,68,68,.22)'" onmouseout="this.style.background='rgba(239,68,68,.1)'">
+          🗑️ مسح كل السجلات
+        </button>
+        <button class="btn-clear-records" onclick="openClearRecordsModal('subject')" style="flex:1;min-width:140px;padding:10px 16px;border-radius:10px;background:rgba(251,191,36,.1);border:1.5px solid rgba(251,191,36,.35);color:#d97706;font-family:'Tajawal',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:var(--transition);display:flex;align-items:center;justify-content:center;gap:6px" onmouseover="this.style.background='rgba(251,191,36,.22)'" onmouseout="this.style.background='rgba(251,191,36,.1)'">
+          📖 مسح مادة من مرحلة
+        </button>
+      </div>
+    </div>`;
 
   // بناء الـ accordion
   function acc(id,icon,title,count,body){
@@ -2451,6 +2524,7 @@ function renderSettings(){
   html += acc('subjects','📖','إدارة المواد',subjects.length,subjHTML);
   html += acc('students','🧑‍🎓','إدارة الطلاب',students.length,studentsHTML);
   html += acc('biometric','🔐','بصمة الوجه',null,bioHTML);
+  html += acc('advanced','⚠️','خيارات متقدمة',null,advHTML);
 
   document.getElementById('settings-content').innerHTML=html;
 }
@@ -2503,6 +2577,65 @@ function clearAllAttendance(){
   user.reauthenticateWithCredential(cred)
     .then(function(){ if(!confirm('مسح كل سجلات الغيابات؟')) return; state.attendance=[];save();renderSettings();toast('تم المسح','i'); })
     .catch(function(){toast('❌ كلمة المرور غير صحيحة','e');});
+}
+
+// ===== مسح السجلات — نافذة الخيارات =====
+function openClearRecordsModal(mode){
+  if(!currentUser||currentUser.role!=='admin'){toast('❌ للمدير فقط','e');return;}
+  const overlay=document.getElementById('clearRecordsOverlay');
+  if(!overlay) return;
+
+  if(mode==='all'){
+    document.getElementById('crm-all-panel').style.display='block';
+    document.getElementById('crm-subject-panel').style.display='none';
+    document.getElementById('crm-title').textContent='🗑️ مسح كل سجلات الغياب';
+  } else {
+    document.getElementById('crm-all-panel').style.display='none';
+    document.getElementById('crm-subject-panel').style.display='block';
+    document.getElementById('crm-title').textContent='📖 مسح سجلات مادة من مرحلة';
+    const stagesSel=document.getElementById('crm-stage');
+    stagesSel.innerHTML='<option value="">-- اختر المرحلة --</option>';
+    (state.stages||[]).forEach(function(s){
+      const opt=document.createElement('option'); opt.value=s.id; opt.textContent=s.name; stagesSel.appendChild(opt);
+    });
+    document.getElementById('crm-subject').innerHTML='<option value="">-- اختر المادة أولاً --</option>';
+  }
+  overlay.classList.add('show');
+}
+function closeClearRecordsModal(){
+  document.getElementById('clearRecordsOverlay').classList.remove('show');
+}
+function crmOnStageChange(){
+  const stageId=document.getElementById('crm-stage').value;
+  const subjSel=document.getElementById('crm-subject');
+  subjSel.innerHTML='<option value="">-- اختر المادة --</option>';
+  if(!stageId) return;
+  (state.subjects||[]).filter(function(s){return String(s.stageId)===stageId;}).forEach(function(s){
+    const opt=document.createElement('option'); opt.value=s.id; opt.textContent=s.name+(s.type==='practical'?' 🔬':' 📖'); subjSel.appendChild(opt);
+  });
+}
+const CLEAR_RECORDS_PASS = 'student1';
+function confirmClearAll(){
+  const pwd=document.getElementById('crm-pwd-all').value;
+  if(!pwd){toast('أدخل كلمة المرور','e');return;}
+  if(pwd!==CLEAR_RECORDS_PASS){toast('❌ كلمة المرور غير صحيحة','e');return;}
+  state.attendance=[];save();closeClearRecordsModal();renderSettings();toast('تم مسح كل سجلات الغياب','i');
+}
+function confirmClearSubject(){
+  const stageId=document.getElementById('crm-stage').value;
+  const subjectId=document.getElementById('crm-subject').value;
+  const pwd=document.getElementById('crm-pwd-subj').value;
+  if(!stageId){toast('اختر المرحلة أولاً','e');return;}
+  if(!subjectId){toast('اختر المادة أولاً','e');return;}
+  if(!pwd){toast('أدخل كلمة المرور','e');return;}
+  if(pwd!==CLEAR_RECORDS_PASS){toast('❌ كلمة المرور غير صحيحة','e');return;}
+  const subj=(state.subjects||[]).find(function(s){return String(s.id)===subjectId;});
+  const stage=(state.stages||[]).find(function(s){return String(s.id)===stageId;});
+  const before=(state.attendance||[]).length;
+  state.attendance=(state.attendance||[]).filter(function(a){return !(String(a.subjectId)===subjectId&&String(a.stageId)===stageId);});
+  const deleted=before-state.attendance.length;
+  save();closeClearRecordsModal();renderSettings();
+  toast('تم مسح '+deleted+' سجل لمادة "'+subj?.name+'" في '+stage?.name,'i');
 }
 
 // ===== PWA — تثبيت مباشر =====
